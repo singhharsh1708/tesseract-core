@@ -36,6 +36,8 @@ class RuntimeConfig(BaseModel):
     description: str = ""
     version: str = "unknown"
     debug: bool = False
+    debug_host: str = "127.0.0.1"
+    debug_port: int = 5678
     input_path: str = "."
     output_path: str = "."
     output_format: supported_format_type = "json"

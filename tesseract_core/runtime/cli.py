@@ -231,7 +231,7 @@ def _schema_to_docstring(schema: Any, current_indent: int = 0) -> str:
     return "\n".join(docstring)
 
 
-def _start_debug_server(wait_for_client: bool, port: int = 5678) -> None:
+def _start_debug_server(wait_for_client: bool) -> None:
     """Start a debugpy server for remote debugging.
 
     The long-running ``serve`` command launches a non-blocking server that a
@@ -240,18 +240,30 @@ def _start_debug_server(wait_for_client: bool, port: int = 5678) -> None:
     debugged too) and block until a client connects, since they would otherwise
     finish before there is a chance to attach.
 
+    The address comes from ``debug_host``/``debug_port`` so that several
+    Tesseracts can be debugged at once; see :class:`RuntimeConfig`.
+
     Args:
         wait_for_client: If True, block until a debugger attaches.
-        port: Port to listen on inside the container.
     """
     # Python 3.11+ freezes stdlib bootstrap modules, which makes debugpy print a
     # noisy "frozen modules" warning (it could only ever miss breakpoints inside
     # those frozen modules, never in user code). Skip the validation check.
     os.environ.setdefault("PYDEVD_DISABLE_FILE_VALIDATION", "1")
 
+    config = get_config()
+
     import debugpy
 
-    debugpy.listen(("0.0.0.0", port))
+    debugpy.listen((config.debug_host, config.debug_port))
+    # Report the address actually bound. Callers that remap it (a container
+    # publishing it on a different host port) report the reachable address
+    # themselves; this is the only report when there is no remapping.
+    print(
+        f"Debugger listening on {config.debug_host}:{config.debug_port}",
+        file=sys.stderr,
+        flush=True,
+    )
     if wait_for_client:
         print(
             "Debug mode enabled, waiting for debugger to attach...",

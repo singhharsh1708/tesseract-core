@@ -747,6 +747,54 @@ def test_serve_debug_port_distinct_from_api_port(mocked_docker, monkeypatch):
     assert len(set(host_ports)) == 2, f"debug and API host ports collided: {host_ports}"
 
 
+@pytest.mark.parametrize(
+    "user_env",
+    [
+        # The runtime reads its config from TESSERACT_*...
+        {"TESSERACT_DEBUG_PORT": "41111"},
+        # ...and typer binds the same options to TESSERACT_RUNTIME_*, which wins
+        # over the former, so both have to be pinned.
+        {"TESSERACT_RUNTIME_DEBUG_PORT": "42222"},
+        {"TESSERACT_DEBUG_HOST": "127.0.0.1"},
+    ],
+)
+def test_moving_the_container_debug_address_is_rejected(mocked_docker, user_env):
+    """Asking for an unreachable debug address must fail, not be substituted.
+
+    The host port is published against a fixed container port, so a debugger
+    bound anywhere else inside the container cannot be reached -- and since
+    one-shot debug mode waits for a client, that hangs rather than failing.
+    A container's environment comes only from `--env`, so setting this is always
+    deliberate; quietly using a different value would look like `--env` had been
+    ignored.
+    """
+    with pytest.raises(UserError, match="cannot be set for a containerized"):
+        engine.serve("foobar", debug=True, environment=dict(user_env))
+
+
+def test_container_debug_address_is_set_for_the_runtime(mocked_docker):
+    """Both spellings must be set, or an inherited one could take precedence."""
+    res, _ = engine.serve("foobar", debug=True)
+    container_env = json.loads(res)["environment"]
+
+    for prefix in ("TESSERACT", "TESSERACT_RUNTIME"):
+        assert container_env[f"{prefix}_DEBUG_PORT"] == engine.CONTAINER_DEBUGPY_PORT
+        assert container_env[f"{prefix}_DEBUG_HOST"] == "0.0.0.0"
+
+
+def test_matching_container_debug_address_is_accepted(mocked_docker):
+    """Setting it to the value already in use is a no-op, not an error."""
+    res, _ = engine.serve(
+        "foobar",
+        debug=True,
+        environment={"TESSERACT_DEBUG_PORT": engine.CONTAINER_DEBUGPY_PORT},
+    )
+
+    assert json.loads(res)["environment"]["TESSERACT_DEBUG_PORT"] == (
+        engine.CONTAINER_DEBUGPY_PORT
+    )
+
+
 def test_serve_container_port_decoupled_from_host_port(mocked_docker):
     """The container-side API port is fixed and independent of the host port.
 

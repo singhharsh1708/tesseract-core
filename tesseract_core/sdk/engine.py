@@ -728,6 +728,40 @@ class _PortInUseError(RuntimeError):
 _PORT_CONFLICT_MARKERS = ("address already in use", "port is already allocated")
 
 
+def _apply_container_debug_address(environment: dict[str, str]) -> None:
+    """Set the in-container debugpy address, rejecting attempts to change it.
+
+    The host port is always published against ``CONTAINER_DEBUGPY_PORT``, so a
+    debugger bound anywhere else inside the container is unreachable -- and
+    because one-shot debug mode waits for a client, that hangs rather than
+    failing. Binding loopback breaks it the same way, since the mapping reaches
+    the container from outside.
+
+    A container's environment is built solely from ``--env``, so the only way to
+    ask for a different address is to type it deliberately. Refuse rather than
+    quietly substituting a different value, which would look like the flag had
+    been ignored. Host processes, which have no mapping to disagree with, choose
+    their address freely -- that is what makes it configurable at all.
+    """
+    for setting, required in (
+        ("DEBUG_HOST", "0.0.0.0"),
+        ("DEBUG_PORT", CONTAINER_DEBUGPY_PORT),
+    ):
+        # The runtime reads TESSERACT_*; typer binds the same options to
+        # TESSERACT_RUNTIME_*, which takes precedence over it.
+        for prefix in ("TESSERACT", "TESSERACT_RUNTIME"):
+            key = f"{prefix}_{setting}"
+            given = environment.get(key)
+            if given is not None and given != required:
+                raise UserError(
+                    f"{key}={given} cannot be set for a containerized Tesseract: "
+                    f"the debugger is published from {required} inside the "
+                    "container to a free port on the host, which is reported when "
+                    "the Tesseract starts. Attach to that port instead."
+                )
+            environment[key] = required
+
+
 def _is_port_conflict(stderr: str) -> bool:
     """Whether runtime stderr/logs indicate a host port collision."""
     lowered = stderr.lower()
@@ -952,6 +986,7 @@ def serve(
             if port_mappings is not None:
                 port_mappings[f"{host_ip}:{debugpy_port}"] = CONTAINER_DEBUGPY_PORT
             environment["TESSERACT_DEBUG"] = "1"
+            _apply_container_debug_address(environment)
 
         extra_args = [
             "--restart",
@@ -1016,7 +1051,11 @@ def serve(
     logger.info(f"Serving Tesseract at http://{ping_ip}:{port}")
     logger.info(f"View Tesseract: http://{ping_ip}:{port}/docs")
     if debug:
-        logger.info(f"Debugpy server listening at http://{ping_ip}:{debugpy_port}")
+        # Not an http:// address — debugpy speaks the Debug Adapter Protocol
+        # over a raw socket, so a URL here just misleads.
+        logger.info(
+            f"Debug mode enabled. Attach a debugger to {ping_ip}:{debugpy_port}"
+        )
 
     return container.name, container
 
@@ -1265,6 +1304,7 @@ def run_tesseract(
 
     if debug:
         environment["TESSERACT_DEBUG"] = "1"
+        _apply_container_debug_address(environment)
         # `network="host"` binds the container's debugpy port directly on the host,
         # so no explicit port mapping is needed (and would actually be rejected).
         if network == "host":

@@ -630,6 +630,9 @@ def test_start_debug_server_blocks_until_client(monkeypatch):
     import types
 
     from tesseract_core.runtime import cli
+    from tesseract_core.runtime.config import update_config
+
+    update_config(debug=True, debug_port=12345)
 
     attached = threading.Event()
     calls = {}
@@ -642,7 +645,7 @@ def test_start_debug_server_blocks_until_client(monkeypatch):
     returned = threading.Event()
 
     def run():
-        cli._start_debug_server(wait_for_client=True, port=12345)
+        cli._start_debug_server(wait_for_client=True)
         returned.set()
 
     server_thread = threading.Thread(target=run, daemon=True)
@@ -650,7 +653,7 @@ def test_start_debug_server_blocks_until_client(monkeypatch):
 
     # The server should be listening but blocked, since no client has attached.
     server_thread.join(timeout=1.0)
-    assert calls["listen"] == ("0.0.0.0", 12345)
+    assert calls["listen"] == ("127.0.0.1", 12345)
     assert not returned.is_set(), "Debug server returned before a client attached"
 
     # Simulate a debugger attaching; the call should now return promptly.
@@ -664,6 +667,9 @@ def test_start_debug_server_no_wait(monkeypatch):
     import types
 
     from tesseract_core.runtime import cli
+    from tesseract_core.runtime.config import update_config
+
+    update_config(debug=True, debug_port=12345)
 
     calls = {"wait": 0}
 
@@ -675,10 +681,62 @@ def test_start_debug_server_no_wait(monkeypatch):
     fake_debugpy.wait_for_client = wait_for_client
     monkeypatch.setitem(sys.modules, "debugpy", fake_debugpy)
 
-    cli._start_debug_server(wait_for_client=False, port=12345)
+    cli._start_debug_server(wait_for_client=False)
 
-    assert calls["listen"] == ("0.0.0.0", 12345)
+    assert calls["listen"] == ("127.0.0.1", 12345)
     assert calls["wait"] == 0, "Debug server blocked on a client when it should not"
+
+
+def _fake_debugpy(monkeypatch, calls):
+    import types
+
+    fake = types.SimpleNamespace()
+    fake.listen = lambda addr: calls.setdefault("listen", addr)
+    fake.wait_for_client = lambda: None
+    monkeypatch.setitem(sys.modules, "debugpy", fake)
+    return fake
+
+
+def test_debug_server_binds_configured_address(monkeypatch, capsys):
+    """Host and port are configurable so several Tesseracts can be debugged at once."""
+    from tesseract_core.runtime import cli
+    from tesseract_core.runtime.config import update_config
+
+    update_config(debug=True, debug_host="127.0.0.1", debug_port=54321)
+    calls = {}
+    _fake_debugpy(monkeypatch, calls)
+
+    cli._start_debug_server(wait_for_client=False)
+
+    assert calls["listen"] == ("127.0.0.1", 54321)
+    # The bound address must be reported, or it cannot be attached to
+    assert "127.0.0.1:54321" in capsys.readouterr().err
+
+
+def test_debug_server_defaults_to_loopback():
+    """A debugger is unauthenticated code execution, so default to loopback.
+
+    Containers need all interfaces for their port mapping to reach the listener,
+    and set that explicitly; nothing else should have to opt out of exposing a
+    debugger on every interface of the machine it runs on.
+    """
+    from tesseract_core.runtime.config import get_config, update_config
+
+    update_config(debug=True)
+    config = get_config()
+
+    assert (config.debug_host, config.debug_port) == ("127.0.0.1", 5678)
+
+
+def test_debug_port_from_env_var(monkeypatch):
+    from tesseract_core.runtime.config import get_config, update_config
+
+    monkeypatch.setenv("TESSERACT_DEBUG_PORT", "45678")
+    monkeypatch.setenv("TESSERACT_DEBUG_HOST", "127.0.0.1")
+    update_config()
+
+    config = get_config()
+    assert (config.debug_host, config.debug_port) == ("127.0.0.1", 45678)
 
 
 def test_local_module(cli, cli_runner, dummy_tesseract_package):
